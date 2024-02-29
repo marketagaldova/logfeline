@@ -1,0 +1,155 @@
+package logfeline.client
+
+import com.github.ajalt.mordant.terminal.Terminal
+import com.github.ajalt.mordant.rendering.TextStyles.*
+import com.github.ajalt.mordant.rendering.TextColors.*
+import logfeline.adb.AdbClient
+import logfeline.adb.AppPackage
+import logfeline.adb.Device
+import logfeline.client.cli.*
+import logfeline.utils.result.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.*
+import kotlin.concurrent.thread
+import kotlin.time.Duration.Companion.milliseconds
+
+
+fun main(args: Array<String>): Unit = runBlocking {
+    val terminal = Terminal()
+    Runtime.getRuntime().addShutdownHook(thread(start = false) { terminal.cursor.move { clearScreenAfterCursor() } })
+    switchStdinToDirectMode()
+    terminal.cursor.hide(showOnExit = true)
+    val client = AdbClient()
+
+    val (selectedDeviceId, selectedDeviceLabel) = terminal.deviceSelectionMenu(client)
+    val (selectedApp, selectedAppLabel) = terminal.appSelectionMenu(client, selectedDeviceId)
+    terminal.logcat(client, selectedDeviceId, selectedDeviceLabel, selectedApp, selectedAppLabel)
+}
+
+
+private data class SelectableDevice(
+    val id: String,
+    val label: String,
+    val connections: List<Device.ConnectionType>,
+) : Comparable<SelectableDevice> {
+    override fun compareTo(other: SelectableDevice) = this.id.compareTo(other.id)
+}
+
+private suspend fun Terminal.deviceSelectionMenu(client: AdbClient): SelectableDevice {
+    val result = singleChoiceMenu(
+        choices = flow {
+            val progressState = ProgressDotsState()
+            suspend fun Terminal.emptyHeader() {
+                print((bold + white)("Waiting for devices"))
+                progressDotsWhileActive(progressState)
+            }
+            fun Terminal.normalHeader() { print((bold + Colors.blue)("Select a device:")) }
+
+            emit(SingleChoiceMenuState(emptyList(), header = { emptyHeader() }))
+
+            var currentDevices = emptyMap<String, SelectableDevice>()
+            client.devices
+                .map { newDevices ->
+                    if (currentDevices.isEmpty() && newDevices.isEmpty()) { return@map SingleChoiceMenuState(emptyList(), header = { emptyHeader() }) }
+                    val newMap = newDevices.groupBy { it.id }
+                    currentDevices = currentDevices
+                        .mapValues { (id, device) ->
+                            device.copy(connections = newMap[id]?.map { it.connectionType }?.sortedDescending() ?: emptyList())
+                        }
+                    currentDevices = currentDevices + newMap.asSequence().mapNotNull { (id, devices) ->
+                        if (id in currentDevices) null
+                        else id to SelectableDevice(id, label = devices.first().label, connections = devices.map { it.connectionType }.sortedDescending())
+                    }
+                    SingleChoiceMenuState(currentDevices.values.sorted(), header = { normalHeader() })
+                }
+                .let { emitAll(it) }
+        },
+        key = { it.id },
+        label = { device ->
+            if (device.connections.isEmpty()) "${(device.label.searchable(dim + white))} ${(dim + italic)("(${"offline".searchable()})")}"
+            else ("${device.label.searchable(bold + white)} ${(italic)("(${device.connections.joinToString(", ") { it.name.lowercase().searchable() }})")}")
+        },
+        searchText = { device ->
+            if (device.connections.isEmpty()) "${device.label} offline"
+            else "${device.label} ${device.connections.joinToString(" ") { it.name.lowercase() }}"
+        },
+    )
+    println((Colors.blue + bold)("Using device '${result.label}'"))
+    return result
+}
+
+
+data class SelectedApp(val app: AppPackage, val label: String)
+
+private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: String): SelectedApp {
+    data class SelectableApp(val app: AppPackage, val label: String? = null)
+
+    val (selectedApp, selectedAppLabel) = singleChoiceMenu(
+        choices = flow {
+            val progressState = ProgressDotsState()
+            suspend fun Terminal.emptyHeader() {
+                print((bold + white)("Listing installed apps"))
+                progressDotsWhileActive(progressState)
+            }
+            suspend fun Terminal.failedHeader() {
+                print((bold + brightRed)("Failed to list installed apps!") + (bold + white)(" Retrying"))
+                progressDotsWhileActive(progressState)
+            }
+            suspend fun Terminal.waitingForLabelsHeader() { while (true) {
+                currentCoroutineContext().ensureActive()
+                cursor.move { startOfLine(); clearLineAfterCursor() }
+                print((bold + Colors.blue)("Select an app "))
+                print(italic("(waiting for labels"))
+                progressDots(progressState)
+                print(italic(")"))
+                delay(50.milliseconds)
+            } }
+            fun Terminal.normalHeader() { print((bold + Colors.blue)("Select an app:")) }
+
+            emit(SingleChoiceMenuState(emptyList(), header = { emptyHeader() }))
+
+            val apps: MutableMap<String, SelectableApp>
+            while (true) {
+                apps = client.listInstalledPackages(deviceId)
+                    .getOrElse {
+                        emit(SingleChoiceMenuState(emptyList(), header = { failedHeader() }))
+                        null
+                    }
+                    ?.associateTo(mutableMapOf()) { it.id to SelectableApp(it) }
+                    ?: continue
+                break
+            }
+
+            emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { waitingForLabelsHeader() }))
+
+            coroutineScope {
+                val labelChannel = Channel<Pair<String, String>>()
+                apps.values.map { (app) -> launch {
+                    val label = client.getLabelForApp(deviceId, app.id).getOrNull() ?: return@launch
+                    labelChannel.send(app.id to label)
+                } }.let { jobs -> launch {
+                    jobs.joinAll()
+                    labelChannel.close()
+                } }
+
+                for ((appId, label) in labelChannel) {
+                    apps[appId] = apps[appId]?.copy(label = label) ?: continue
+                    emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { waitingForLabelsHeader() }))
+                }
+            }
+            emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { normalHeader() }))
+        },
+        key = { it.app.id },
+        hide = { !it.app.debuggable },
+        label = { (app, label) ->
+            if (label.isNullOrBlank() || label == app.id) app.id.searchable()
+            else label.searchable(white + bold) + (dim)(" (${app.id.searchable()})")
+        },
+        searchText = { (app, label) -> if (label.isNullOrBlank() || label == app.id) app.id else "$label ${app.id}" },
+    )
+
+    val result = SelectedApp(selectedApp, selectedAppLabel ?: selectedApp.id)
+    println((Colors.blue + bold)("Using app '${result.label}'"))
+    return result
+}

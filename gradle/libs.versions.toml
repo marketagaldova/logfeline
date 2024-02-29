@@ -1,0 +1,31 @@
+[versions]
+logfeline = "0.1.0"
+
+kotlin = "1.9.22"
+kotlinx-coroutines = "1.8.0"
+kotlinx-datetime = "0.5.0"
+
+protobuf-gradle-plugin = "0.9.4"
+protobuf-runtime = "3.25.3"
+
+mordant = "2.3.0"
+
+
+[plugins]
+kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobuf-gradle-plugin" }
+
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
+
+protobuf-runtime-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf-runtime" }
+protobuf-runtime-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf-runtime" }
+
+mordant = { module = "com.github.ajalt.mordant:mordant", version.ref = "mordant" }
+
+
+[bundles]
+kotlinx-coroutines = ["kotlinx-coroutines-core"]
+protobuf-runtime = ["protobuf-runtime-java", "protobuf-runtime-kotlin"]
