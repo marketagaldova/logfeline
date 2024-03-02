@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin)
+    alias(libs.plugins.kotlinx.serialization)
     application
 }
 
@@ -14,5 +15,6 @@ application.mainClass = "logfeline.client.AppKt"
 
 dependencies {
     implementation(project(":adb"))
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.mordant)
 }

@@ -24,6 +24,8 @@ suspend fun Terminal.logcat(
     app: AppPackage,
     appLabelService: AppLabelService = client.startAppLabelService(deviceId),
 ): Nothing = coroutineScope {
+    val clientConfig = ClientConfig.get()
+
     val appLabel = MutableStateFlow(app.id).apply {
         launch { value = appLabelService.get(app.id) }
     }
@@ -31,14 +33,23 @@ suspend fun Terminal.logcat(
     val device = MutableStateFlow<Device?>(null)
     val pid = MutableStateFlow<Int?>(null)
 
-    val rawFilter = MutableStateFlow("")
+    val rawFilter = MutableStateFlow(clientConfig.filter(deviceId, app.id))
     val filter = rawFilter.map { if (it.isNotBlank()) Filter.parse(it) else null }.stateIn(this)
     val showFilterEdit = MutableStateFlow(false)
 
+    val command = MutableStateFlow<String?>(null)
+
     @Suppress("NAME_SHADOWING") 
-    val statusBar = combine(device, pid, appLabel, showFilterEdit, rawFilter) { device, pid, appLabel, showFilterEdit, rawFilter ->
-        if (showFilterEdit) Text("Set filters: " + underline(("$rawFilter▏").padEnd(info.width - 13)), width = info.width)
-        else prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = rawFilter.isNotBlank())
+    val statusBar = combine(
+        device, pid, appLabel,
+        combine(showFilterEdit, rawFilter) { show, raw -> show to raw },
+        command,
+    ) { device, pid, appLabel, (showFilterEdit, rawFilter), command ->
+        when {
+            command != null -> Text("Command: " + underline(("$command▏").padEnd(info.width - 13)), width = info.width)
+            showFilterEdit -> Text("Set filters: " + underline(("$rawFilter▏").padEnd(info.width - 13)), width = info.width)
+            else -> prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = rawFilter.isNotBlank())
+        }
     }.stateIn(this)
 
     fun renderStatusBar() {
@@ -57,13 +68,31 @@ suspend fun Terminal.logcat(
     // Filter editing
     //TODO: Make this cancellable somehow?
     launch(Dispatchers.IO) { while (currentCoroutineContext().isActive) {
-        when (val char = Char(System.`in`.read())) {
-            ESCAPE -> continue
-            'q' -> if (!showFilterEdit.value) exitProcess(0) else rawFilter.value += char
-            '/' -> if (!showFilterEdit.value) showFilterEdit.value = true else rawFilter.value += char
-            '\n' -> showFilterEdit.value = false
-            '\u007f' -> if (showFilterEdit.value) rawFilter.value = rawFilter.value.dropLast(1)
-            else -> if (showFilterEdit.value) rawFilter.value += char
+        when {
+            showFilterEdit.value -> when (val char = Char(System.`in`.read())) {
+                ESCAPE -> continue
+                '\n' -> showFilterEdit.value = false
+                '\u007f' -> rawFilter.value = rawFilter.value.dropLast(1)
+                else -> rawFilter.value += char
+            }
+            command.value != null -> when (val char = Char(System.`in`.read())) {
+                ESCAPE -> continue
+                '\n' -> when (command.value) {
+                    "save filter" -> {
+                        clientConfig.updateFilter(deviceId, app.id, rawFilter.value)
+                        command.value = null
+                    }
+                    else -> command.value = null
+                }
+                '\u007f' -> command.value = command.value.orEmpty().dropLast(1)
+                else -> command.value = command.value.orEmpty() + char
+            }
+            else -> when (val char = Char(System.`in`.read())) {
+                'q' -> exitProcess(0)
+                '/' -> showFilterEdit.value = true
+                ':' -> command.value = ""
+                else -> { /* pass */ }
+            }
         }
     } }
 
