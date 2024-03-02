@@ -91,6 +91,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
                     if (next != '[') continue
                     when (Char(System.`in`.read())) {
                         'A' -> currentChoices.let { choices ->
+                            if (choices.isEmpty()) return@let
                             val selectedKey = selectedKeyFlow.value
                             val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
                             val newIndex = when {
@@ -101,6 +102,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
                             selectedKeyFlow.value = key(choices[newIndex])
                         }
                         'B' -> currentChoices.let { choices ->
+                            if (choices.isEmpty()) return@let
                             val selectedKey = selectedKeyFlow.value
                             val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
                             val newIndex = when {
