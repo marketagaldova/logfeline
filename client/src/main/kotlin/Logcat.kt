@@ -39,6 +39,8 @@ suspend fun Terminal.logcat(
 
     val command = MutableStateFlow<String?>(null)
 
+    var tagColors = TagColors.DIM
+
     @Suppress("NAME_SHADOWING") 
     val statusBar = combine(
         device, pid, appLabel,
@@ -77,10 +79,16 @@ suspend fun Terminal.logcat(
             }
             command.value != null -> when (val char = Char(System.`in`.read())) {
                 ESCAPE -> continue
-                '\n' -> when (command.value) {
-                    "save filter" -> {
+                '\n' -> when {
+                    command.value == "save filter" -> {
                         clientConfig.updateFilter(deviceId, app.id, rawFilter.value)
                         command.value = null
+                    }
+                    command.value?.startsWith("highlight ") == true -> {
+                        val value = command.value?.removePrefix("highlight ")?.uppercase()
+                        command.value = null
+                        if (value == null) continue
+                        tagColors = TagColors.entries.firstOrNull { it.name == value } ?: tagColors
                     }
                     else -> command.value = null
                 }
@@ -144,7 +152,7 @@ suspend fun Terminal.logcat(
                         align = TextAlign.CENTER,
                     ))
                 }
-                printEvent(formatLogEntry(entry))
+                printEvent(formatLogEntry(entry, tagColors))
             }
         }
     } }
