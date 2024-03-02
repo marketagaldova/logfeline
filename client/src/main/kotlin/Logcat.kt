@@ -6,10 +6,6 @@ import com.github.ajalt.mordant.table.ColumnWidth
 import com.github.ajalt.mordant.table.horizontalLayout
 import com.github.ajalt.mordant.terminal.Terminal
 import com.github.ajalt.mordant.widgets.Text
-import logfeline.adb.AdbClient
-import logfeline.adb.AppPackage
-import logfeline.adb.Device
-import logfeline.adb.LogEntry
 import logfeline.adb.LogEntry.Priority
 import logfeline.client.cli.Colors
 import kotlinx.coroutines.awaitCancellation
@@ -17,6 +13,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.*
+import logfeline.adb.*
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -24,15 +21,18 @@ import kotlin.time.Duration.Companion.seconds
 suspend fun Terminal.logcat(
     client: AdbClient,
     deviceId: String, deviceLabel: String,
-    app: AppPackage, appLabel: String?,
+    app: AppPackage,
+    appLabelService: AppLabelService = client.startAppLabelService(deviceId),
 ): Nothing = coroutineScope {
-    @Suppress("NAME_SHADOWING")
-    val appLabel = appLabel ?: app.id
+    val appLabel = MutableStateFlow(app.id).apply {
+        launch { value = appLabelService.get(app.id) }
+    }
 
     val device = MutableStateFlow<Device?>(null)
     val pid = MutableStateFlow<Int?>(null)
 
-    val statusBar = device.combine(pid) { device, pid ->
+    @Suppress("NAME_SHADOWING") 
+    val statusBar = combine(device, pid, appLabel) { device, pid, appLabel ->
         prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid)
     }.stateIn(this)
 

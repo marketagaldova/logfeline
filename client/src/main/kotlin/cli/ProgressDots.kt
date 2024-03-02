@@ -14,6 +14,7 @@ data class ProgressDotsState(val startedAt: TimeMark = TimeSource.Monotonic.mark
 fun Terminal.progressDots(state: ProgressDotsState) {
     val progress = ((state.startedAt.elapsedNow() / state.duration).let { it - it.toInt() } * 13).toInt()
     fun printDot(offset: Int) {
+        @Suppress("NAME_SHADOWING")
         val progress = (progress + offset) % 13
         print(when (progress) {
             in 0..2 -> " "

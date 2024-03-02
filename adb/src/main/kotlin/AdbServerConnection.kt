@@ -10,6 +10,7 @@ import kotlinx.coroutines.channels.SendChannel
 import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.Socket
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
@@ -63,7 +64,7 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
     suspend inline fun <R> runShellCommand(
         vararg arguments: String,
         socketTimeout: Duration? = null,
-        crossinline block: suspend (InputStream) -> Result<R, IOError>,
+        crossinline block: suspend (OutputStream, InputStream) -> Result<R, IOError>,
     ): Result<R, Error.RunShellCommand> {
         @Suppress("NAME_SHADOWING")
         val arguments = arguments.map {
@@ -75,7 +76,7 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
         awaitResponse().onFailure { e -> return Result.failure(e) }
         socket.soTimeout = socketTimeout?.inWholeMilliseconds?.toInt() ?: 0
         return withContext(Dispatchers.IO) { attemptRead {
-            block(inputStream).getOrElse { e -> return@withContext Result.failure(Error.IO.Error(e)) }
+            block(outputStream, inputStream).getOrElse { e -> return@withContext Result.failure(Error.IO.Error(e)) }
         }.mapError { e -> Error.IO.Error(e) } }
     }
 

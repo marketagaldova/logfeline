@@ -24,6 +24,9 @@ internal fun OutputStream.writeHex4Prefixed(data: ByteArray): Result<Unit, IOErr
 internal object Hex4ValueOutOfRange : IOError.Write
 
 
+// The return is actually necessary because read() may throw, which will cause attemptRead {} to return a failure result.
+// I am slightly curious what would happen without it, as it does compile just fine, but I'm too lazy to try it.
+@Suppress("UNREACHABLE_CODE")
 internal fun InputStream.readHex4(): Result<UShort, IOError.Read> { return attemptRead {
     var result: UShort = 0u
     for (shift in 12 downTo 0 step 4) {

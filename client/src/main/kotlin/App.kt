@@ -11,11 +11,14 @@ import logfeline.utils.result.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import logfeline.adb.AppLabelService
 import kotlin.concurrent.thread
 import kotlin.time.Duration.Companion.milliseconds
 
 
-fun main(args: Array<String>): Unit = runBlocking {
+fun main(@Suppress("UNUSED_PARAMETER") args: Array<String>): Unit = runBlocking {
     val terminal = Terminal()
     Runtime.getRuntime().addShutdownHook(thread(start = false) { terminal.cursor.move { clearScreenAfterCursor() } })
     switchStdinToDirectMode()
@@ -23,8 +26,10 @@ fun main(args: Array<String>): Unit = runBlocking {
     val client = AdbClient()
 
     val (selectedDeviceId, selectedDeviceLabel) = terminal.deviceSelectionMenu(client)
-    val (selectedApp, selectedAppLabel) = terminal.appSelectionMenu(client, selectedDeviceId)
-    terminal.logcat(client, selectedDeviceId, selectedDeviceLabel, selectedApp, selectedAppLabel)
+    val appLabelService = client.startAppLabelService(selectedDeviceId)
+    appLabelService.cacheAll() // Prefetch the labels because why not
+    val selectedApp = terminal.appSelectionMenu(client, selectedDeviceId, appLabelService)
+    terminal.logcat(client, selectedDeviceId, selectedDeviceLabel, selectedApp, appLabelService)
 }
 
 
@@ -80,9 +85,7 @@ private suspend fun Terminal.deviceSelectionMenu(client: AdbClient): SelectableD
 }
 
 
-data class SelectedApp(val app: AppPackage, val label: String)
-
-private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: String): SelectedApp {
+private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: String, appLabelService: AppLabelService): AppPackage {
     data class SelectableApp(val app: AppPackage, val label: String? = null)
 
     val (selectedApp, selectedAppLabel) = singleChoiceMenu(
@@ -121,23 +124,37 @@ private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: Strin
                 break
             }
 
-            emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { waitingForLabelsHeader() }))
-
             coroutineScope {
-                val labelChannel = Channel<Pair<String, String>>()
-                apps.values.map { (app) -> launch {
-                    val label = client.getLabelForApp(deviceId, app.id).getOrNull() ?: return@launch
-                    labelChannel.send(app.id to label)
-                } }.let { jobs -> launch {
-                    jobs.joinAll()
-                    labelChannel.close()
-                } }
+                emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { waitingForLabelsHeader() }))
 
+                // Fetch labels for the debuggable apps first
+                val labelChannel = Channel<Pair<String, String>>()
+                apps.values
+                    .filter { it.app.debuggable }
+                    .map { (app) -> launch {
+                        val label = appLabelService.get(app.id)
+                        labelChannel.send(app.id to label)
+                    } }
+                    .let { jobs -> launch {
+                        jobs.joinAll()
+                        labelChannel.close()
+                    } }
                 for ((appId, label) in labelChannel) {
                     apps[appId] = apps[appId]?.copy(label = label) ?: continue
                     emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { waitingForLabelsHeader() }))
                 }
             }
+
+            // Fetch labels for all apps - we do this in a single update to avoid updating the ui too much and causing lots of flickering...
+            coroutineScope {
+                val mutex = Mutex(locked = true)
+                apps.values.map { (app) -> launch {
+                    val label = appLabelService.get(app.id)
+                    mutex.withLock { apps[app.id] = apps[app.id]?.copy(label = label) ?: return@withLock }
+                } }
+                mutex.unlock()
+            }
+            // A final update with all the labels
             emit(SingleChoiceMenuState(apps.values.sortedBy { it.app.id }, header = { normalHeader() }))
         },
         key = { it.app.id },
@@ -149,7 +166,6 @@ private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: Strin
         searchText = { (app, label) -> if (label.isNullOrBlank() || label == app.id) app.id else "$label ${app.id}" },
     )
 
-    val result = SelectedApp(selectedApp, selectedAppLabel ?: selectedApp.id)
-    println((Colors.blue + bold)("Using app '${result.label}'"))
-    return result
+    println((Colors.blue + bold)("Using app '${selectedAppLabel ?: selectedApp.id}'"))
+    return selectedApp
 }

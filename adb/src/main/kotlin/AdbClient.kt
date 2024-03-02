@@ -13,6 +13,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.SocketTimeoutException
 import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.InvocationKind
@@ -116,7 +117,7 @@ class AdbClient(
                 runShellCommand(
                     serial, "sh", "-c", "while true; do echo; sleep ${NON_USB_DEVICE_PING_INTERVAL.inWholeSeconds}; done",
                     socketTimeout = NON_USB_DEVICE_TIMEOUT,
-                ) { stdout ->
+                ) { _, stdout ->
                     isOnline = true
                     updateChannel.send(null)
                     while (isActive) {
@@ -186,11 +187,11 @@ class AdbClient(
         val device = devices.firstOrNull()?.firstOrNull { it.id == deviceId } ?: return Result.failure(Error.DeviceOffline(deviceId))
         return runShellCommand(
             device.serial, "sh", "-c", "dumpsys package packages | grep -E '^ *Package \\[|^ *userId=|^ *flags=\\['",
-        ) { input ->
+        ) { _, stdout ->
             attemptRead { coroutineScope {
                 val channel = Channel<String>(Channel.BUFFERED)
                 launch(Dispatchers.IO) {
-                    input.bufferedReader().lineSequence().forEach { channel.send(it.trim()) }
+                    stdout.bufferedReader().lineSequence().forEach { channel.send(it.trim()) }
                     channel.close()
                 }
                 buildList {
@@ -225,65 +226,33 @@ class AdbClient(
         }.mapError { Error.IO }
     }
 
+    
+    fun startAppLabelService(deviceId: String) = AppLabelService(this, deviceId)
 
-    private val appLabelCache = mutableMapOf<String, MutableMap<String, String>>()
-    private val appLabelMutex = Mutex()
-    suspend fun getLabelForApp(deviceId: String, id: String): Result<String, Error.GetLabelForApp> = result {
-        synchronized(appLabelCache) { appLabelCache[deviceId]?.get(id)?.let { return@result it } }
-        appLabelMutex.withLock {
-            val needsFullSync = synchronized(appLabelCache) {
-                appLabelCache[deviceId]?.get(id)?.let { return@result it }
-                deviceId !in appLabelCache
+    internal suspend fun prepareAppLabelsDex(serial: String): Result<String, Error.IO> = result {
+        val classLoader = this::class.java.classLoader
+        val appLabelDexHash = classLoader.getResourceAsStream("AppLabels.sha256")!!.bufferedReader().use { it.readText() }
+        val appLabelDexName = "AppLabels-$appLabelDexHash.dex"
+
+        AdbServerConnection.open(host, port)
+            .getOrFail { Error.IO }
+            .use { connection ->
+                connection.switchToDevice(serial).getOrFail { Error.IO }
+                connection.enterSyncMode().getOrFail { Error.IO }
+
+                val dexUpToDate = connection.syncStat("/data/local/tmp/$appLabelDexName")
+                    .getOrFail { Error.IO }
+                    .exists
+
+                if (!dexUpToDate)
+                    classLoader.getResourceAsStream("AppLabels.dex")!!.use { input ->
+                        connection.syncSend("/data/local/tmp/$appLabelDexName", input).getOrFail { Error.IO }
+                    }
+
+                connection.exitSyncMode().getOrFail { Error.IO }
             }
 
-            val classLoader = this::class.java.classLoader
-            val appLabelDexHash = classLoader.getResourceAsStream("AppLabels.sha256")!!.bufferedReader().use { it.readText() }
-            val appLabelDexName = "AppLabels-$appLabelDexHash.dex"
-
-            val device = devices.firstOrNull()?.firstOrNull { it.id == deviceId } ?: fail(Error.DeviceOffline(deviceId))
-
-            AdbServerConnection.open(host, port)
-                .getOrFail { Error.IO }
-                .use { connection ->
-                    connection.switchToDevice(device.serial).getOrFail { Error.IO }
-                    connection.enterSyncMode().getOrFail { Error.IO }
-
-                    val dexUpToDate = connection.syncStat("/data/local/tmp/$appLabelDexName")
-                        .getOrFail { Error.IO }
-                        .exists
-
-                    if (!dexUpToDate)
-                        classLoader.getResourceAsStream("AppLabels.dex")!!.use { input ->
-                            connection.syncSend("/data/local/tmp/$appLabelDexName", input).getOrFail { Error.IO }
-                        }
-
-                    connection.exitSyncMode().getOrFail { Error.IO }
-                }
-
-            val command = "CLASSPATH=/data/local/tmp/$appLabelDexName app_process / AppLabels"
-            if (needsFullSync) {
-                val result = runShellCommand(device.serial, "sh", "-c", command) { input ->
-                    val result = mutableMapOf<String, String>()
-                    input.bufferedReader().lineSequence()
-                        .map { it.split(':') }
-                        .filter { it.size >= 2 }
-                        .forEach { result[it[0]] = it[1] }
-                    Result.success(result)
-                }.getOrFail { Error.IO }
-                val label = result.getOrPut(id) { id }
-                synchronized(appLabelCache) {
-                    appLabelCache[deviceId] = result
-                }
-                label
-            }
-            else {
-                val label = runShellCommand(device.serial, "sh", "-c", "$command $id").getOrNull()?.trim() ?: id
-                synchronized(appLabelCache) {
-                    appLabelCache.getOrPut(deviceId, ::mutableMapOf)[id] = label
-                }
-                label
-            }
-        }
+        "CLASSPATH=/data/local/tmp/$appLabelDexName app_process / AppLabels"
     }
 
 
@@ -319,7 +288,7 @@ class AdbClient(
 
                 try { while (currentCoroutineContext().isActive) {
                     val startTime = lastEntry?.let { "${it.header.seconds}.${it.header.nanos}" } ?: "0.0"
-                    runShellCommand(device.serial, "logcat", "--binary", "-T", startTime) { stdout -> coroutineScope {
+                    runShellCommand(device.serial, "logcat", "--binary", "-T", startTime) { _, stdout -> coroutineScope {
                         val passThroughChannel = Channel<LogEntry>()
                         launch {
                             try { for (entry in passThroughChannel) {
@@ -363,11 +332,11 @@ class AdbClient(
 
 
     @OptIn(ExperimentalContracts::class)
-    private suspend inline fun <R> runShellCommand(
+    internal suspend inline fun <R> runShellCommand(
             serial: String,
             vararg arguments: String,
             socketTimeout: Duration? = null,
-            crossinline block: suspend (InputStream) -> Result<R, IOError>,
+            crossinline block: suspend (OutputStream, InputStream) -> Result<R, IOError>,
     ): Result<R, AdbServerConnection.Error> {
         contract {
             callsInPlace(block, InvocationKind.AT_MOST_ONCE)
@@ -382,8 +351,8 @@ class AdbClient(
                     .let { return Result.success(it) }
             }
     }
-    private suspend fun runShellCommand(serial: String, vararg arguments: String): Result<String, AdbServerConnection.Error> =
-        runShellCommand(serial, *arguments) { Result.success(it.bufferedReader().readText()) }
+    internal suspend fun runShellCommand(serial: String, vararg arguments: String): Result<String, AdbServerConnection.Error> =
+        runShellCommand(serial, *arguments) { _, stdout -> Result.success(stdout.bufferedReader().readText()) }
 
 
     companion object {

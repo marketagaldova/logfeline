@@ -30,6 +30,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
 
     var headerJob: Job? = null
     
+    @Suppress("NAME_SHADOWING")
     val renderJob = combine(
         choices,
         selectedKeyFlow,
@@ -121,6 +122,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
                 else -> { queryFlow.value = queryFlow.value.orEmpty() + char; updateSearch() }
             }
         }
+        @Suppress("UNREACHABLE_CODE") // This *is* in fact unreachable, but type inference freaks out because for whatever reason `while (true)` is unferred to Unit...
         awaitCancellation()
     }.also {
         renderJob.cancelAndJoin()
