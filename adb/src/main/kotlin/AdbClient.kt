@@ -22,7 +22,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class AdbClient(
     val host: String = DEFAULT_HOST,
-    val port: Int = DEFAULT_PORT,
+    val port: Int = System.getenv("ANDROID_ADB_SERVER_PORT")?.toIntOrNull() ?: DEFAULT_PORT,
     val reconnectInterval: Duration = 10.seconds,
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)

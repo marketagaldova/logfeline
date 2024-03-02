@@ -15,15 +15,45 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import logfeline.adb.AppLabelService
 import kotlin.concurrent.thread
+import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
 
 
-fun main(@Suppress("UNUSED_PARAMETER") args: Array<String>): Unit = runBlocking {
+fun main(args: Array<String>): Unit = runBlocking {
+    var adbHost = AdbClient.DEFAULT_HOST
+    var adbPort = System.getenv("ANDROID_ADB_SERVER_PORT")?.toIntOrNull() ?: AdbClient.DEFAULT_PORT
+    args.forEach { arg -> println(arg); when {
+        arg.startsWith("server=") -> {
+            val value = arg.split('=', limit = 2)[1].ifBlank {
+                println("Missing value for server")
+                exitProcess(1)
+            }
+            val split = value.split(':', limit = 2)
+            adbHost = split[0].let { when {
+                it.isEmpty() -> adbHost
+                it.isBlank() -> {
+                    println("Not a valid hostname: `$it`")
+                    exitProcess(1)
+                }
+                else -> it
+            } }
+            adbPort = if (split.size == 1) AdbClient.DEFAULT_PORT else split[1].toIntOrNull() ?: run {
+                println("Invalid port number: `${split[1]}`")
+                exitProcess(1)
+            }
+        }
+        else -> {
+            println("Unkown argument: `$arg`")
+            exitProcess(1)
+        }
+    } }
+
     val terminal = Terminal()
     Runtime.getRuntime().addShutdownHook(thread(start = false) { terminal.cursor.move { clearScreenAfterCursor() } })
     switchStdinToDirectMode()
     terminal.cursor.hide(showOnExit = true)
-    val client = AdbClient()
+
+    val client = AdbClient(adbHost, adbPort)
 
     val (selectedDeviceId, selectedDeviceLabel) = terminal.deviceSelectionMenu(client)
     val appLabelService = client.startAppLabelService(selectedDeviceId)
