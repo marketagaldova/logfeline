@@ -16,12 +16,16 @@ A better adb logcat, written in kotlin.
 Java 17 is required at minimum.
 
 The adb client itself only requires a fairly modern adb server to be running on
-`localhost:5037`. You can start one with `adb start-server` for example. The
-version I tested with is `1.0.41` (packaged in platform tools `35.0.0`).
-Anything newer should be fine. Older versions might work, but no guarantees on
-that. You can check your adb version with `adb --version`.  
-*TODO: Attempt to start the server automatically*  
-*TODO: Make the host and port configurable from the cli*
+`localhost`. It will respect `ANDROID_ADB_SERVER_PORT` or default to `5037` when
+that isn't set. Alternatively, you can specify the host and port on the command
+line using the `server=<host>:<port>` option (`server=:<port>` is also valid and
+will use `localhost` for the hostname).
+
+You can start an adb server with `adb start-server`. The version I tested with is
+`1.0.41` (packaged in platform tools `35.0.0`). Anything newer should be fine.
+Older versions might work, but no guarantees on that. You can check your adb
+version with `adb --version`.  
+*TODO: Attempt to start the server automatically*
 
 The client interface is really only built for linux though. It requires a
 terminal with support for ANSI escape sequences and `stty` to be available on the
