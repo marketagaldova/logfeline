@@ -6,14 +6,14 @@ import com.github.ajalt.mordant.table.ColumnWidth
 import com.github.ajalt.mordant.table.horizontalLayout
 import com.github.ajalt.mordant.terminal.Terminal
 import com.github.ajalt.mordant.widgets.Text
+import kotlinx.coroutines.*
 import logfeline.adb.LogEntry.Priority
 import logfeline.client.cli.Colors
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.*
 import logfeline.adb.*
+import logfeline.client.cli.ESCAPE
+import kotlin.system.exitProcess
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -31,9 +31,14 @@ suspend fun Terminal.logcat(
     val device = MutableStateFlow<Device?>(null)
     val pid = MutableStateFlow<Int?>(null)
 
+    val rawFilter = MutableStateFlow("")
+    val filter = rawFilter.map { if (it.isNotBlank()) Filter.parse(it) else null }.stateIn(this)
+    val showFilterEdit = MutableStateFlow(false)
+
     @Suppress("NAME_SHADOWING") 
-    val statusBar = combine(device, pid, appLabel) { device, pid, appLabel ->
-        prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid)
+    val statusBar = combine(device, pid, appLabel, showFilterEdit, rawFilter) { device, pid, appLabel, showFilterEdit, rawFilter ->
+        if (showFilterEdit) Text("Set filters: " + underline(("$rawFilter▏").padEnd(info.width - 13)), width = info.width)
+        else prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = rawFilter.isNotBlank())
     }.stateIn(this)
 
     fun renderStatusBar() {
@@ -48,6 +53,19 @@ suspend fun Terminal.logcat(
 
     // Status bar updates
     launch { statusBar.collectLatest { renderMutex.withLock { renderStatusBar() } } }
+
+    // Filter editing
+    //TODO: Make this cancellable somehow?
+    launch(Dispatchers.IO) { while (currentCoroutineContext().isActive) {
+        when (val char = Char(System.`in`.read())) {
+            ESCAPE -> continue
+            'q' -> if (!showFilterEdit.value) exitProcess(0) else rawFilter.value += char
+            '/' -> if (!showFilterEdit.value) showFilterEdit.value = true else rawFilter.value += char
+            '\n' -> showFilterEdit.value = false
+            '\u007f' -> if (showFilterEdit.value) rawFilter.value = rawFilter.value.dropLast(1)
+            else -> if (showFilterEdit.value) rawFilter.value += char
+        }
+    } }
 
     // Actual log
     suspend fun printEvent(event: String) = renderMutex.withLock {
@@ -83,7 +101,10 @@ suspend fun Terminal.logcat(
             ))
 
             for (entry in event.entries) {
-                if (entry.header.uid != app.uid) continue
+                if (
+                    entry.header.uid != app.uid
+                    || (filter.value?.matches(entry.payload.priority, entry.payload.tag) == false)
+                ) continue
                 //TODO: Set back to null when the process exits.
                 //      This will probably require some polling, though it should be doable as a device-side shell command that will exit once a poll fails.
                 if (pid.value != entry.header.pid) {
@@ -106,7 +127,8 @@ suspend fun Terminal.logcat(
 private fun prepareStatusBar(
     device: String, connectionType: Device.ConnectionType?,
     app: String, pid: Int?,
-) = horizontalLayout {
+    filtered: Boolean,
+    ) = horizontalLayout {
     style =
         if (connectionType == null) Colors.veryDarkRed on Colors.red
         else Colors.veryDarkGreen on Colors.green
@@ -114,7 +136,12 @@ private fun prepareStatusBar(
     column(0) { this.width = ColumnWidth.Expand() }
     cell(
         " " + bold(app)
-        + if (connectionType != null) " " +  italic("(${pid ?: "dead"})") else ""
+        + when {
+            connectionType == null && !filtered -> ""
+            !filtered -> italic(" (${pid ?: "dead"})")
+            connectionType == null -> italic(" (filtered)")
+            else -> italic(" (${pid ?: "dead"}, filtered)")
+        }
     ) {
         align = TextAlign.LEFT
         overflowWrap = OverflowWrap.ELLIPSES
@@ -169,3 +196,58 @@ private fun formatLogEntry(entry: LogEntry, tagColors: TagColors = TagColors.DIM
 }
 
 enum class TagColors { NONE, BASIC, DIM, BRIGHT }
+
+
+private data class Filter(
+    val excludeTags: List<Tag> = emptyList(),
+    val includeTags: List<Tag> = emptyList(),
+    val priorities: Set<Priority> = Priority.entries.toSet(),
+) {
+    fun matches(priority: Priority, tag: String): Boolean =
+        priority in priorities
+        && excludeTags.none { it.matches(tag) }
+        && (includeTags.isEmpty() || includeTags.any { it.matches(tag) })
+
+
+    companion object {
+        fun parse(rawFilter: String): Filter {
+            val excludeTags = mutableListOf<Tag>()
+            val includeTags = mutableListOf<Tag>()
+            val includePriorities = mutableSetOf<Priority>()
+            val excludePriorities = mutableSetOf<Priority>()
+
+            rawFilter.split(Regex("\\s+")).forEach { part ->
+                when {
+                    part.startsWith("tag:") -> part.substring(4).takeIf { it.isNotBlank() }?.let { includeTags.add(Tag.Matches(it)) }
+                    part.startsWith("-tag:") -> part.substring(5).takeIf { it.isNotBlank() }?.let { excludeTags.add(Tag.Matches(it)) }
+                    part.startsWith("tag.contains:") -> part.substring(13).takeIf { it.isNotBlank() }?.let { includeTags.add(Tag.Contains(it)) }
+                    part.startsWith("-tag.contains:") -> part.substring(14).takeIf { it.isNotBlank() }?.let { excludeTags.add(Tag.Contains(it)) }
+                    part.startsWith("priority:") -> part.substring(9).split(',')
+                        .filter { it.isNotBlank() }
+                        .mapNotNull { Priority.entries.firstOrNull { priority -> priority.name.startsWith(it.uppercase()) } }
+                        .let { includePriorities.addAll(it) }
+                    part.startsWith("-priority:") -> part.substring(10).split(',')
+                        .filter { it.isNotBlank() }
+                        .mapNotNull { Priority.entries.firstOrNull { priority -> priority.name.startsWith(it.uppercase()) } }
+                        .let { excludePriorities.addAll(it) }
+                    else -> { /* pass */ }
+                }
+            }
+
+            return Filter(excludeTags, includeTags, priorities = includePriorities.ifEmpty { Priority.entries.toSet() } - excludePriorities)
+        }
+    }
+
+
+    sealed interface Tag {
+        fun matches(tag: String): Boolean
+
+        data class Matches(val query: String) : Tag {
+            override fun matches(tag: String) = tag == query
+        }
+
+        data class Contains(val query: String) : Tag {
+            override fun matches(tag: String) = query in tag
+        }
+    }
+}

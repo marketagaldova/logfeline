@@ -192,4 +192,4 @@ private fun computeSearchScore(searchText: String, query: List<String>): Int {
 }
 
 
-private const val ESCAPE = '\u001b'
+const val ESCAPE = '\u001b'
