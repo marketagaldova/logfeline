@@ -59,7 +59,7 @@ class AppLabelService internal constructor(private val client: AdbClient, privat
                             
                             val reader = stdout.bufferedReader()
                             while (currentCoroutineContext().isActive) {
-                                val line = reader.readLine()
+                                val line = reader.readLine() ?: break
                                 when {
                                     line == "listing" -> while (currentCoroutineContext().isActive) {
                                         val response = reader.readLine()
