@@ -34,7 +34,7 @@ import kotlin.io.path.*
             instance?.let { return it }
             synchronized(Companion) {
                 instance?.let { return it }
-                val configFiles = listOf(configFile) + (System.getenv("XDG_CONFIG_DIRS") ?: "/etc/xdg").split(':').map { Path(it) / "logfeline" / "config.json" }
+                val configFiles = listOf(configFile) + (System.getenv("XDG_CONFIG_DIRS") ?: "/etc/xdg").split(':').map { Path(it) / "logfeline" / "client-config.json" }
                 val actualConfigFile = configFiles.firstOrNull { it.exists() } ?: configFiles.first()
                 if (!actualConfigFile.exists()) return ClientConfig()
                 @OptIn(ExperimentalSerializationApi::class)
@@ -43,7 +43,7 @@ import kotlin.io.path.*
         }
         
         private val configFile: Path =
-            (System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }?.let { Path(it) / "logfeline" / "config.json" })
-            ?: (Path(System.getProperty("user.home")) / ".config" / "logfeline" / "config.json")
+            (System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }?.let { Path(it) / "logfeline" / "client-config.json" })
+            ?: (Path(System.getProperty("user.home")) / ".config" / "logfeline" / "client-config.json")
     }
 }
