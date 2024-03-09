@@ -119,44 +119,51 @@ suspend fun Terminal.logcat(
         println()
         renderStatusBar()
     }
-    client.logcat(deviceId).collect { event -> when (event) {
-        is AdbClient.LogcatEvent.Disconnected -> { device.value = null }
-        is AdbClient.LogcatEvent.Connected -> {
-            device.value = event.device
 
-            val text = when (event) {
-                is AdbClient.LogcatEvent.Connected.Initial ->
-                    bold("Connected via ${event.device.connectionType.name.lowercase()}")
-                is AdbClient.LogcatEvent.Connected.Reconnect ->
-                    "${bold("Reconnected via ${event.device.connectionType.name.lowercase()}")} ${italic("(${(event.connectedAt - event.disconnectedAt).format()} offline)")}"
-            }
-            printEvent(Text(
-                text = "\n" + (Colors.veryDarkRed on Colors.pink)(text) + "\n",
-                width = info.width,
-                align = TextAlign.CENTER,
-            ))
+    try {
+        client.logcat(deviceId).collect { event -> when (event) {
+            is AdbClient.LogcatEvent.Disconnected -> { device.value = null }
+            is AdbClient.LogcatEvent.Connected -> {
+                device.value = event.device
 
-            for (entry in event.entries) {
-                if (
-                    entry.header.uid != app.uid
-                    || (filter.value?.matches(entry.payload.priority, entry.payload.tag) == false)
-                ) continue
-                //TODO: Set back to null when the process exits.
-                //      This will probably require some polling, though it should be doable as a device-side shell command that will exit once a poll fails.
-                if (pid.value != entry.header.pid) {
-                    pid.value = entry.header.pid
-                    printEvent(Text(
-                        text = "\n${(bold + Colors.veryDarkBlue on Colors.blue)("Process ${pid.value}")}\n",
-                        width = info.width,
-                        align = TextAlign.CENTER,
-                    ))
+                val text = when (event) {
+                    is AdbClient.LogcatEvent.Connected.Initial ->
+                        bold("Connected via ${event.device.connectionType.name.lowercase()}")
+                    is AdbClient.LogcatEvent.Connected.Reconnect ->
+                        "${bold("Reconnected via ${event.device.connectionType.name.lowercase()}")} ${italic("(${(event.connectedAt - event.disconnectedAt).format()} offline)")}"
                 }
-                printEvent(formatLogEntry(entry, tagColors))
-            }
-        }
-    } }
+                printEvent(Text(
+                    text = "\n" + (Colors.veryDarkRed on Colors.pink)(text) + "\n",
+                    width = info.width,
+                    align = TextAlign.CENTER,
+                ))
 
-    awaitCancellation() // The logcat flow never ends, but there is no way to notate that.
+                for (entry in event.entries) {
+                    if (
+                        entry.header.uid != app.uid
+                        || (filter.value?.matches(entry.payload.priority, entry.payload.tag) == false)
+                    ) continue
+                    //TODO: Set back to null when the process exits.
+                    //      This will probably require some polling, though it should be doable as a device-side shell command that will exit once a poll fails.
+                    if (pid.value != entry.header.pid) {
+                        pid.value = entry.header.pid
+                        printEvent(Text(
+                            text = "\n${(bold + Colors.veryDarkBlue on Colors.blue)("Process ${pid.value}")}\n",
+                            width = info.width,
+                            align = TextAlign.CENTER,
+                        ))
+                    }
+                    printEvent(formatLogEntry(entry, tagColors))
+                }
+            }
+        } }
+        // The logcat flow never ends, but there is no way to notate that.
+        awaitCancellation()
+    }
+    finally {
+        filterInput.close()
+        commandInput.close()
+    }
 }
 
 

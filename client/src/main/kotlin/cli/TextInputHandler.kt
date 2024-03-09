@@ -3,6 +3,7 @@ package logfeline.client.cli
 import com.github.ajalt.mordant.rendering.TextStyles.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.io.Closeable
 import java.io.InputStream
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -12,44 +13,55 @@ class TextInputHandler(
     scope: CoroutineScope,
     initialValue: String = "",
     private val blinkInterval: Duration? = 0.75.seconds,
+    private val onVerticalArrow: (arrow: VerticalArrow) -> Unit = {},
     private val customHandler: State.(Char) -> State? = { null },
-) : StateFlow<TextInputHandler.State> {
+) : StateFlow<TextInputHandler.State>, Closeable {
     private val flow = MutableStateFlow(State(initialValue))
     override val replayCache get() = flow.replayCache
     override val value get() = flow.value
     override suspend fun collect(collector: FlowCollector<State>) = flow.collect(collector)
     
-    init {
+    private val blinkJob =
         if (blinkInterval != null) scope.launch { while (isActive) {
             delay(blinkInterval)
             synchronized(this) { flow.value = flow.value.blink() }
         } }
-    }
+        else null
+
+    override fun close() { blinkJob?.cancel() }
     
-    fun consume(stream: InputStream = System.`in`) = synchronized(this) { flow.value.run {
+    fun consume(stream: InputStream = System.`in`): Boolean = synchronized(this) { flow.value.run {
         val char = Char(stream.read())
-        customHandler(char)?.let { flow.value = it; return }
+        customHandler(char)?.let { flow.value = it; return value != flow.value.value }
         flow.value = when (char) {
             ESCAPE -> {
-                if (Char(stream.read()) != '[') return
-                when (Char(stream.read())) {
+                if (Char(stream.read()) != '[') return false
+                when (val nextChar = Char(stream.read())) {
+                    'A', 'B' -> { // Up, down arrows
+                        onVerticalArrow(if (nextChar == 'A') VerticalArrow.UP else VerticalArrow.DOWN)
+                        return false
+                    }
                     'C' -> moveCursor(1) // Right arrow
                     'D' -> moveCursor(-1) // Left arrow
                     'H' -> moveCursorToStart() // Home
                     'F' -> moveCursorToEnd() // End
                     '3' -> when (Char(stream.read())) {
                         '~' -> delete() // Delete
-                        else -> return
+                        else -> return false
                     }
-                    else -> return
+                    else -> return false
                 }
             }
-            '\n' -> return // Enter
+            '\n' -> return false // Enter
             '\u007f' -> backspace() // Backspace
             else -> insert(char)
         }
+
+        value != flow.value.value
     } }
-    
+
+
+    enum class VerticalArrow { UP, DOWN }
     
     data class State(val value: String = "", val cursorPosition: Int = value.length, val blinkState: Boolean = true) {
         fun blink() = copy(blinkState = !blinkState)

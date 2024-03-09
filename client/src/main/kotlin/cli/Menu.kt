@@ -25,7 +25,40 @@ suspend fun <T> Terminal.singleChoiceMenu(
     val selectedKeyFlow = MutableStateFlow<String?>(null)
     var allChoices = emptyList<T>()
     var currentChoices = emptyList<T>()
-    val queryFlow = MutableStateFlow<String?>(null)
+
+    val showQuery = MutableStateFlow(false)
+    val queryInput = TextInputHandler(
+        scope = this,
+        onVerticalArrow = { arrow -> when (arrow) {
+            TextInputHandler.VerticalArrow.UP -> currentChoices.let { choices ->
+                if (choices.isEmpty()) return@let
+                val selectedKey = selectedKeyFlow.value
+                val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
+                val newIndex = when {
+                    currentIndex < 0 -> choices.lastIndex
+                    currentIndex == 0 -> currentIndex
+                    else -> currentIndex - 1
+                }
+                selectedKeyFlow.value = key(choices[newIndex])
+            }
+            TextInputHandler.VerticalArrow.DOWN -> currentChoices.let { choices ->
+                if (choices.isEmpty()) return@let
+                val selectedKey = selectedKeyFlow.value
+                val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
+                val newIndex = when {
+                    currentIndex < 0 -> 0
+                    currentIndex == choices.lastIndex -> currentIndex
+                    else -> currentIndex + 1
+                }
+                selectedKeyFlow.value = key(choices[newIndex])
+            }
+        } },
+        customHandler = { char -> when (char) {
+            '\n' -> throw QueryEnterPressed()
+            else -> null
+        } },
+    )
+
     val searchResults = MutableStateFlow(emptyList<String>())
 
     var headerJob: Job? = null
@@ -34,9 +67,10 @@ suspend fun <T> Terminal.singleChoiceMenu(
     val renderJob = combine(
         choices,
         selectedKeyFlow,
-        queryFlow,
+        showQuery,
+        queryInput,
         searchResults,
-    ) { (choices, header), selectedKey, query, searchResults ->
+    ) { (choices, header), selectedKey, showQuery, queryInput, searchResults ->
         headerJob?.cancelAndJoin()
 
         val permanentChoices = choices.filter { !hide(it) }
@@ -53,7 +87,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
         println()
 
         // Render the choices
-        val labelScope = LabelScope(query)
+        val labelScope = LabelScope(queryInput.value)
         actualChoices.forEach { choice ->
             val isSelected = key(choice) == selectedKey
             print(if (isSelected) cursorStyle(">>> ") else "    ")
@@ -61,8 +95,8 @@ suspend fun <T> Terminal.singleChoiceMenu(
         }
 
         // Render the query
-        if (query != null) {
-            print("Search: " + underline(("$query▏").padEnd(50)))
+        if (showQuery) {
+            print(queryInput.render("Search: ", 70))
             cursor.move { startOfLine() }
         }
 
@@ -72,7 +106,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
     }.flowOn(Dispatchers.IO).launchIn(this)
 
     fun updateSearch() {
-        val query = queryFlow.value ?: return
+        val query = queryInput.value.value
         searchResults.value = allChoices
             .map { choice -> choice to computeSearchScore(searchText(choice), query.lowercase().split(' ').filter { it.isNotEmpty() }) }
             .filter { (_, score) -> score != 0 }
@@ -85,43 +119,17 @@ suspend fun <T> Terminal.singleChoiceMenu(
     withContext(Dispatchers.IO) {
         while (true) {
             ensureActive()
-            when (val char = Char(System.`in`.read())) {
-                ESCAPE -> {
-                    val next = Char(System.`in`.read())
-                    if (next != '[') continue
-                    when (Char(System.`in`.read())) {
-                        'A' -> currentChoices.let { choices ->
-                            if (choices.isEmpty()) return@let
-                            val selectedKey = selectedKeyFlow.value
-                            val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
-                            val newIndex = when {
-                                currentIndex < 0 -> choices.lastIndex
-                                currentIndex == 0 -> currentIndex
-                                else -> currentIndex - 1
-                            }
-                            selectedKeyFlow.value = key(choices[newIndex])
-                        }
-                        'B' -> currentChoices.let { choices ->
-                            if (choices.isEmpty()) return@let
-                            val selectedKey = selectedKeyFlow.value
-                            val currentIndex = choices.indexOfFirst { key(it) == selectedKey }
-                            val newIndex = when {
-                                currentIndex < 0 -> 0
-                                currentIndex == choices.lastIndex -> currentIndex
-                                else -> currentIndex + 1
-                            }
-                            selectedKeyFlow.value = key(choices[newIndex])
-                        }
-                        else -> continue
-                    }
+            try {
+                val queryChanged = queryInput.consume()
+                if (queryChanged) {
+                    updateSearch()
+                    showQuery.value = true
                 }
-                '\n' -> {
-                    currentChoices.singleOrNull()?.let { return@withContext it }
-                    val selectedKey = selectedKeyFlow.value
-                    return@withContext currentChoices.firstOrNull { key(it) == selectedKey } ?: continue
-                }
-                '\u007f' -> { queryFlow.value = queryFlow.value?.dropLast(1); updateSearch() }
-                else -> { queryFlow.value = queryFlow.value.orEmpty() + char; updateSearch() }
+            }
+            catch (e: QueryEnterPressed) {
+                currentChoices.singleOrNull()?.let { return@withContext it }
+                val selectedKey = selectedKeyFlow.value
+                return@withContext currentChoices.firstOrNull { key(it) == selectedKey } ?: continue
             }
         }
         @Suppress("UNREACHABLE_CODE") // This *is* in fact unreachable, but type inference freaks out because for whatever reason `while (true)` is unferred to Unit...
@@ -129,6 +137,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
     }.also {
         renderJob.cancelAndJoin()
         headerJob?.cancel()
+        queryInput.close()
         cursor.move { startOfLine(); clearScreenAfterCursor() }
     }
 }
@@ -195,3 +204,5 @@ private fun computeSearchScore(searchText: String, query: List<String>): Int {
 
 
 const val ESCAPE = '\u001b'
+
+private class QueryEnterPressed : Exception()
