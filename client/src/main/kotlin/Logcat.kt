@@ -12,7 +12,7 @@ import logfeline.client.cli.Colors
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.*
 import logfeline.adb.*
-import logfeline.client.cli.ESCAPE
+import logfeline.client.cli.TextInputHandler
 import kotlin.system.exitProcess
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -33,24 +33,45 @@ suspend fun Terminal.logcat(
     val device = MutableStateFlow<Device?>(null)
     val pid = MutableStateFlow<Int?>(null)
 
-    val rawFilter = MutableStateFlow(clientConfig.filter(deviceId, app.id))
-    val filter = rawFilter.map { if (it.isNotBlank()) Filter.parse(it) else null }.stateIn(this)
-    val showFilterEdit = MutableStateFlow(false)
+    val showFilter = MutableStateFlow(false)
+    val filterInput = TextInputHandler(this, clientConfig.filter(deviceId, app.id)) { char -> when (char) {
+        '\n' -> {
+            showFilter.value = false
+            moveCursorToEnd()
+        }
+        else -> null
+    } }
 
-    val command = MutableStateFlow<String?>(null)
+    val filter = filterInput.map { if (it.value.isNotBlank()) Filter.parse(it.value) else null }.stateIn(this)
 
     var tagColors = TagColors.DIM
+
+    val showCommand = MutableStateFlow(false)
+    val commandInput = TextInputHandler(this) { char -> when (char) {
+        '\n' -> {
+            when {
+                value == "save filter" -> clientConfig.updateFilter(deviceId, app.id, filterInput.value.value)
+                value.startsWith("highlight ") -> {
+                    val style = value.removePrefix("highlight ").uppercase()
+                    tagColors = TagColors.entries.firstOrNull { it.name == style } ?: tagColors
+                }
+            }
+            showCommand.value = false
+            clear()
+        }
+        else -> null
+    } }
 
     @Suppress("NAME_SHADOWING") 
     val statusBar = combine(
         device, pid, appLabel,
-        combine(showFilterEdit, rawFilter) { show, raw -> show to raw },
-        command,
-    ) { device, pid, appLabel, (showFilterEdit, rawFilter), command ->
+        combine(showFilter, filterInput) { show, input -> show to input },
+        combine(showCommand, commandInput) { show, input -> show to input },
+    ) { device, pid, appLabel, (showFilter, filterInput), (showCommand, commandInput) ->
         when {
-            command != null -> Text("Command: " + underline(("$command▏").padEnd(info.width - 13)), width = info.width)
-            showFilterEdit -> Text("Set filters: " + underline(("$rawFilter▏").padEnd(info.width - 13)), width = info.width)
-            else -> prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = rawFilter.isNotBlank())
+            showCommand -> Text(commandInput.render("Command: ", info.width), width = info.width)
+            showFilter -> Text(filterInput.render("Set filters", info.width), width = info.width)
+            else -> prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = filterInput.value.isNotBlank())
         }
     }.stateIn(this)
 
@@ -71,34 +92,12 @@ suspend fun Terminal.logcat(
     //TODO: Make this cancellable somehow?
     launch(Dispatchers.IO) { while (currentCoroutineContext().isActive) {
         when {
-            showFilterEdit.value -> when (val char = Char(System.`in`.read())) {
-                ESCAPE -> continue
-                '\n' -> showFilterEdit.value = false
-                '\u007f' -> rawFilter.value = rawFilter.value.dropLast(1)
-                else -> rawFilter.value += char
-            }
-            command.value != null -> when (val char = Char(System.`in`.read())) {
-                ESCAPE -> continue
-                '\n' -> when {
-                    command.value == "save filter" -> {
-                        clientConfig.updateFilter(deviceId, app.id, rawFilter.value)
-                        command.value = null
-                    }
-                    command.value?.startsWith("highlight ") == true -> {
-                        val value = command.value?.removePrefix("highlight ")?.uppercase()
-                        command.value = null
-                        if (value == null) continue
-                        tagColors = TagColors.entries.firstOrNull { it.name == value } ?: tagColors
-                    }
-                    else -> command.value = null
-                }
-                '\u007f' -> command.value = command.value.orEmpty().dropLast(1)
-                else -> command.value = command.value.orEmpty() + char
-            }
+            showFilter.value -> filterInput.consume()
+            showCommand.value -> commandInput.consume()
             else -> when (val char = Char(System.`in`.read())) {
                 'q' -> exitProcess(0)
-                '/' -> showFilterEdit.value = true
-                ':' -> command.value = ""
+                '/' -> showFilter.value = true
+                ':' -> showCommand.value = true
                 else -> { /* pass */ }
             }
         }
