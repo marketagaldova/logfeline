@@ -46,15 +46,23 @@ suspend fun Terminal.logcat(
 
     var tagColors = TagColors.DIM
 
+    var commandOutput: ((String) -> Unit)? = null
     val showCommand = MutableStateFlow(false)
     val commandInput = TextInputHandler(this) { char -> when (char) {
         '\n' -> {
             when {
-                value == "save filter" -> clientConfig.updateFilter(deviceId, app.id, filterInput.value.value)
+                value == "save filter" -> {
+                    clientConfig.updateFilter(deviceId, app.id, filterInput.value.value)
+                    commandOutput?.invoke("Saved filter `${filterInput.value.value}`")
+                }
                 value.startsWith("highlight ") -> {
                     val style = value.removePrefix("highlight ").uppercase()
-                    tagColors = TagColors.entries.firstOrNull { it.name == style } ?: tagColors
+                    val newStyle = TagColors.entries.firstOrNull { it.name == style }
+                    tagColors = newStyle ?: tagColors
+                    if (newStyle != null) commandOutput?.invoke("Set tag highlighting style to ${newStyle.name}")
+                    else commandOutput?.invoke("Unknown highlighting style: `$style`")
                 }
+                value.isNotBlank() -> commandOutput?.invoke("Unknown command: `$value`")
             }
             showCommand.value = false
             clear()
@@ -103,7 +111,6 @@ suspend fun Terminal.logcat(
         }
     } }
 
-    // Actual log
     suspend fun printEvent(event: String) = renderMutex.withLock {
         cursor.move { up(1) }
         // 0J is clearScreenAfterCursor. We do this part manually so we can print this in one go and avoid
@@ -120,6 +127,14 @@ suspend fun Terminal.logcat(
         renderStatusBar()
     }
 
+    commandOutput = { message -> launch { printEvent(Text(
+        text = "\n" + (Colors.veryDarkRed on Colors.pink)(message.prependIndent(" ")) + "\n",
+        width = info.width,
+        align = TextAlign.LEFT,
+        whitespace = Whitespace.PRE_WRAP,
+    )) } }
+
+    // Actual log
     try {
         client.logcat(deviceId).collect { event -> when (event) {
             is AdbClient.LogcatEvent.Disconnected -> { device.value = null }
