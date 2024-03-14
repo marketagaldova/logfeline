@@ -9,6 +9,7 @@ import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.flow.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -373,6 +374,38 @@ class AdbClient(
             ) : Connected
         }
     }
+
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    suspend fun watchPidOf(deviceId: String, packageId: String) = flow {
+        emit(null)
+        var previousPid: Int? = null
+        device(deviceId).transformLatest { device ->
+            if (device?.state !is Device.State.Online) return@transformLatest
+            while (true) {
+                runShellCommand(
+                    device.serial,
+                    "sh", "-c", "while true; do pidof '$packageId' || echo 'dead'; sleep 1; done",
+                    socketTimeout = 3.seconds,
+                    ) { _, stdout ->
+                    try {
+                        val reader = stdout.bufferedReader()
+                        while (true) {
+                            val line = reader.readLine() ?: throw EOFException()
+                            val pid = line.toIntOrNull()
+                            if (pid != previousPid) {
+                                emit(pid)
+                                previousPid = pid
+                            }
+                        }
+                        @Suppress("UNREACHABLE_CODE")
+                        Result.success()
+                    }
+                    catch (e: IOException) { Result.failure(IOError.Read.Generic(e)) }
+                }.onFailure { delay(1.seconds) }
+            }
+        }.let { emitAll(it) }
+    }.conflate()
 
 
     @OptIn(ExperimentalContracts::class)

@@ -31,7 +31,6 @@ suspend fun Terminal.logcat(
     }
 
     val device = MutableStateFlow<DeviceDescriptor?>(null)
-    val pid = MutableStateFlow<Int?>(null)
 
     val showFilter = MutableStateFlow(false)
     val filterInput = TextInputHandler(this, clientConfig.filter(deviceId, app.id)) { char -> when (char) {
@@ -70,12 +69,14 @@ suspend fun Terminal.logcat(
         else -> null
     } }
 
+    val pid = client.watchPidOf(deviceId, app.id)
+
     @Suppress("NAME_SHADOWING") 
     val statusBar = combine(
-        device, pid, appLabel,
+        combine(device, pid, appLabel) { device, pid, appLabel -> Triple(device, pid, appLabel) },
         combine(showFilter, filterInput) { show, input -> show to input },
         combine(showCommand, commandInput) { show, input -> show to input },
-    ) { device, pid, appLabel, (showFilter, filterInput), (showCommand, commandInput) ->
+    ) { (device, pid, appLabel), (showFilter, filterInput), (showCommand, commandInput) ->
         when {
             showCommand -> Text(commandInput.render("Command: ", info.width), width = info.width)
             showFilter -> Text(filterInput.render("Set filters", info.width), width = info.width)
@@ -140,6 +141,8 @@ suspend fun Terminal.logcat(
 
     // Actual log
     try {
+        @Suppress("NAME_SHADOWING")
+        var pid: Int? = null
         client.logcat(deviceId).collect { event -> when (event) {
             is AdbClient.LogcatEvent.Disconnected -> { device.value = event.device }
             is AdbClient.LogcatEvent.Connected -> {
@@ -164,10 +167,10 @@ suspend fun Terminal.logcat(
                     ) continue
                     //TODO: Set back to null when the process exits.
                     //      This will probably require some polling, though it should be doable as a device-side shell command that will exit once a poll fails.
-                    if (pid.value != entry.header.pid) {
-                        pid.value = entry.header.pid
+                    if (pid != entry.header.pid) {
+                        pid = entry.header.pid
                         printEvent(Text(
-                            text = "\n${(bold + Colors.veryDarkBlue on Colors.blue)("Process ${pid.value}")}\n",
+                            text = "\n${(bold + Colors.veryDarkBlue on Colors.blue)("Process $pid")}\n",
                             width = info.width,
                             align = TextAlign.CENTER,
                         ))
