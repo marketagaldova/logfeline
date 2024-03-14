@@ -28,7 +28,7 @@ class AdbClient(
     private val scope = CoroutineScope(Dispatchers.Default)
     
     
-    val devices: SharedFlow<List<Device>> = flow {
+    val devices: SharedFlow<List<DeviceDescriptor>> = flow {
         while (currentCoroutineContext().isActive) {
             AdbServerConnection.open(host, port)
                 .onFailure { delay(reconnectInterval) }
@@ -40,7 +40,6 @@ class AdbClient(
                             try {
                                 for (devices in channel)
                                     devices.deviceList
-                                        .filter { it.state == DevicesProto.ConnectionState.DEVICE }
                                         .let { updateChannel.send(it) }
                             }
                             finally { updateChannel.close() }
@@ -69,9 +68,32 @@ class AdbClient(
                             }
 
                             currentRawDevices
-                                .filter { pingJobs[it.transportId.toULong()]?.isOnline() != false }
-                                .map { async { normalizeDevice(it) } }
-                                .mapNotNull { it.await() }
+                                .map {
+                                    val state =
+                                        if (pingJobs[it.transportId.toULong()]?.isOnline() == false) Device.State.Offline
+                                        else when (it.state!!) {
+                                            DevicesProto.ConnectionState.DEVICE -> Device.State.Online
+                                            DevicesProto.ConnectionState.OFFLINE -> Device.State.Offline
+
+                                            DevicesProto.ConnectionState.CONNECTING -> Device.State.Other("connecting")
+                                            DevicesProto.ConnectionState.AUTHORIZING -> Device.State.Other("authorizing")
+                                            DevicesProto.ConnectionState.UNAUTHORIZED -> Device.State.Other("unauthorized")
+                                            DevicesProto.ConnectionState.NOPERMISSION -> Device.State.Other("insufficient permissions")
+
+                                            DevicesProto.ConnectionState.DETACHED -> Device.State.Other("detached")
+                                            DevicesProto.ConnectionState.BOOTLOADER -> Device.State.Other("bootloader")
+                                            DevicesProto.ConnectionState.RECOVERY -> Device.State.Other("recovery")
+                                            DevicesProto.ConnectionState.SIDELOAD -> Device.State.Other("sideload")
+                                            DevicesProto.ConnectionState.RESCUE -> Device.State.Other("rescue")
+
+                                            DevicesProto.ConnectionState.HOST,
+                                            DevicesProto.ConnectionState.ANY,
+                                            DevicesProto.ConnectionState.UNRECOGNIZED,
+                                            -> Device.State.Other("unrecognized state")
+                                        }
+                                    async { normalizeDevice(it, state) }
+                                }
+                                .awaitAll()
                                 .sorted()
                                 .let { emit(it) }
                         } }
@@ -135,28 +157,48 @@ class AdbClient(
         }
     }
 
-    fun device(id: String): Flow<Device?> = flow {
-        var lastValue: Device? = null
+    fun device(id: String): Flow<DeviceDescriptor?> = flow {
+        var lastValue: DeviceDescriptor? = null
         devices.collect { devices ->
-            val newValue = devices.firstOrNull { it.id == id }
-            if (newValue?.transportId != lastValue?.transportId) {
+            val newValue = devices.firstOrNull { it.estimatedId == id }
+            if (newValue?.transportId != lastValue?.transportId || newValue?.state != lastValue?.state) {
                 emit(newValue)
                 lastValue = newValue
             }
         }
     }.conflate()
 
+    private suspend fun findOnlineDevice(id: String): Device? {
+        return (devices.firstOrNull() ?: return null)
+            .asSequence()
+            .filterIsInstance<Device>()
+            .firstOrNull { it.id == id }
+    }
 
-    private suspend fun normalizeDevice(proto: DevicesProto.Device): Device? = coroutineScope {
+
+    private suspend fun normalizeDevice(proto: DevicesProto.Device, state: Device.State): DeviceDescriptor = coroutineScope {
+        val connectionType = when (proto.connectionType!!) {
+            DevicesProto.ConnectionType.USB -> Device.ConnectionType.USB
+            DevicesProto.ConnectionType.SOCKET -> Device.ConnectionType.TCP
+            DevicesProto.ConnectionType.UNKNOWN, DevicesProto.ConnectionType.UNRECOGNIZED -> Device.ConnectionType.UNKNOWN
+        }
+        fun offline() = OfflineDevice(
+            connectionType, state,
+            transportId = proto.transportId.toULong(),
+            serial = proto.serial,
+            estimatedId = when (connectionType) {
+                Device.ConnectionType.USB -> "serial:${proto.serial}"
+                else -> null
+            },
+        )
+
+        if (state !is Device.State.Online) return@coroutineScope offline()
+
         val realSerial = async { getRealDeviceSerial(proto.serial) }
         val brand = async { getDeviceBrand(proto.serial) }
         Device(
-            id = "serial:${realSerial.await().getOrNull() ?: return@coroutineScope null}",
-            connectionType = when (proto.connectionType!!) {
-                DevicesProto.ConnectionType.USB -> Device.ConnectionType.USB
-                DevicesProto.ConnectionType.SOCKET -> Device.ConnectionType.TCP
-                DevicesProto.ConnectionType.UNKNOWN, DevicesProto.ConnectionType.UNRECOGNIZED -> Device.ConnectionType.UNKNOWN
-            },
+            id = "serial:${realSerial.await().getOrNull() ?: return@coroutineScope offline()}",
+            connectionType, state,
             transportId = proto.transportId.toULong(),
             serial = proto.serial,
             brand = brand.await().getOrNull() ?: "Unknown Brand",
@@ -182,7 +224,8 @@ class AdbClient(
     
 
     suspend fun listInstalledPackages(deviceId: String): Result<List<AppPackage>, Error.ListInstalledPackages> {
-        val device = devices.firstOrNull()?.firstOrNull { it.id == deviceId } ?: return Result.failure(Error.DeviceOffline(deviceId))
+        val device = findOnlineDevice(deviceId) ?: return Result.failure(Error.DeviceOffline(deviceId))
+
         return runShellCommand(
             device.serial, "sh", "-c", "dumpsys package packages | grep -E '^ *Package \\[|^ *userId=|^ *flags=\\['",
         ) { _, stdout ->
@@ -260,15 +303,16 @@ class AdbClient(
 
         @OptIn(ExperimentalCoroutinesApi::class)
         emitAll(device(deviceId).transformLatest { device ->
-            if (device == null) {
-                disconnectedAt = Clock.System.now()
-                emit(LogcatEvent.Disconnected(disconnectedAt!!))
+            if (device !is Device) {
+                disconnectedAt = disconnectedAt ?: Clock.System.now()
+                emit(LogcatEvent.Disconnected(disconnectedAt!!, device))
                 return@transformLatest
             }
             try {
                 val entries = Channel<LogEntry>(Channel.BUFFERED)
                 if (disconnectedAt == null) emit(LogcatEvent.Connected.Initial(device, Clock.System.now(), entries))
                 else emit(LogcatEvent.Connected.Reconnect(device, disconnectedAt!!, Clock.System.now(), entries))
+                disconnectedAt = null
 
                 //TODO: There is *some* potential for this to get stuck.
                 //      If the connection fails while waiting for a message, but the device detection is still active,
@@ -307,9 +351,11 @@ class AdbClient(
         })
     }
     sealed interface LogcatEvent {
-        data class Disconnected(val disconnectedAt: Instant) : LogcatEvent
+        val device: DeviceDescriptor?
+
+        data class Disconnected(val disconnectedAt: Instant, override val device: DeviceDescriptor?) : LogcatEvent
         sealed interface Connected : LogcatEvent {
-            val device: Device
+            override val device: Device
             val connectedAt: Instant
             val entries: ReceiveChannel<LogEntry>
 

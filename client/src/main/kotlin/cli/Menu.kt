@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.*
 
 data class SingleChoiceMenuState<T>(
     val choices: List<T>,
+    val extraEntries: List<T> = emptyList(),
     val header: (suspend Terminal.() -> Unit)? = null,
 )
 
@@ -70,7 +71,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
         showQuery,
         queryInput,
         searchResults,
-    ) { (choices, header), selectedKey, showQuery, queryInput, searchResults ->
+    ) { (choices, extraEntries, header), selectedKey, showQuery, queryInput, searchResults ->
         headerJob?.cancelAndJoin()
 
         val permanentChoices = choices.filter { !hide(it) }
@@ -93,6 +94,8 @@ suspend fun <T> Terminal.singleChoiceMenu(
             print(if (isSelected) cursorStyle(">>> ") else "    ")
             println(labelScope.label(choice))
         }
+        // Render extra entries
+        extraEntries.forEach { entry -> println("    " + labelScope.label(entry)) }
 
         // Render the query
         if (showQuery) {
@@ -101,7 +104,7 @@ suspend fun <T> Terminal.singleChoiceMenu(
         }
 
         // Go back to the header line and let the header job do it's thing
-        cursor.move { up(actualChoices.size + (if (header != null) 1 else 0)) }
+        cursor.move { up(actualChoices.size + extraEntries.size + (if (header != null) 1 else 0)) }
         headerJob = header?.let { this@outerScope.launch { it() } }
     }.flowOn(Dispatchers.IO).launchIn(this)
 

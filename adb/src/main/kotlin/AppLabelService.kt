@@ -16,7 +16,7 @@ import kotlin.time.Duration.Companion.seconds
 class AppLabelService internal constructor(private val client: AdbClient, private val deviceId: String) : Closeable {
     private val scope = CoroutineScope(Dispatchers.Default)
     
-    private val pendingRequests = Channel<String?>()
+    private val pendingRequests = Channel<String?>(Channel.BUFFERED)
     private val inFlightRequests = mutableSetOf<String>()
     private val responseFlow = MutableSharedFlow<Pair<String, String>>(replay = 10)
     

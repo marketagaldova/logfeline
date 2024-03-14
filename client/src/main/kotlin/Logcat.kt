@@ -30,7 +30,7 @@ suspend fun Terminal.logcat(
         launch { value = appLabelService.get(app.id) }
     }
 
-    val device = MutableStateFlow<Device?>(null)
+    val device = MutableStateFlow<DeviceDescriptor?>(null)
     val pid = MutableStateFlow<Int?>(null)
 
     val showFilter = MutableStateFlow(false)
@@ -79,7 +79,11 @@ suspend fun Terminal.logcat(
         when {
             showCommand -> Text(commandInput.render("Command: ", info.width), width = info.width)
             showFilter -> Text(filterInput.render("Set filters", info.width), width = info.width)
-            else -> prepareStatusBar(deviceLabel, device?.connectionType, appLabel, pid, filtered = filterInput.value.isNotBlank())
+            else -> prepareStatusBar(
+                deviceLabel, device?.connectionType, device?.state ?: Device.State.Offline,
+                appLabel, pid,
+                filtered = filterInput.value.isNotBlank(),
+            )
         }
     }.stateIn(this)
 
@@ -137,7 +141,7 @@ suspend fun Terminal.logcat(
     // Actual log
     try {
         client.logcat(deviceId).collect { event -> when (event) {
-            is AdbClient.LogcatEvent.Disconnected -> { device.value = null }
+            is AdbClient.LogcatEvent.Disconnected -> { device.value = event.device }
             is AdbClient.LogcatEvent.Connected -> {
                 device.value = event.device
 
@@ -183,12 +187,12 @@ suspend fun Terminal.logcat(
 
 
 private fun prepareStatusBar(
-    device: String, connectionType: Device.ConnectionType?,
+    device: String, connectionType: Device.ConnectionType?, state: Device.State,
     app: String, pid: Int?,
     filtered: Boolean,
-    ) = horizontalLayout {
+) = horizontalLayout {
     style =
-        if (connectionType == null) Colors.veryDarkRed on Colors.red
+        if (state !is Device.State.Online) Colors.veryDarkRed on Colors.red
         else Colors.veryDarkGreen on Colors.green
 
     column(0) { this.width = ColumnWidth.Expand() }
@@ -205,7 +209,8 @@ private fun prepareStatusBar(
         overflowWrap = OverflowWrap.ELLIPSES
     }
     column(1) { this.width = ColumnWidth.Expand() }
-    cell(bold(device) + " " + italic("(${connectionType?.toString()?.lowercase() ?: "offline"})" + " ")) {
+    val error = (state as? Device.State.Other)?.run { ", $description" } ?: ""
+    cell(bold(device) + " " + italic("(${connectionType?.toString()?.lowercase() ?: "offline"}$error)" + " ")) {
         align = TextAlign.RIGHT
         overflowWrap = OverflowWrap.ELLIPSES
     }

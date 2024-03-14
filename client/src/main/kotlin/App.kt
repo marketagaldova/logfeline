@@ -17,6 +17,7 @@ import logfeline.adb.AppLabelService
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 
 fun main(args: Array<String>): Unit = runBlocking {
@@ -67,6 +68,7 @@ private data class SelectableDevice(
     val id: String,
     val label: String,
     val connections: List<Device.ConnectionType>,
+    val errors: List<Device.State.Other> = emptyList(),
 ) : Comparable<SelectableDevice> {
     override fun compareTo(other: SelectableDevice) = this.id.compareTo(other.id)
 }
@@ -87,7 +89,7 @@ private suspend fun Terminal.deviceSelectionMenu(client: AdbClient): SelectableD
             client.devices
                 .map { newDevices ->
                     if (currentDevices.isEmpty() && newDevices.isEmpty()) { return@map SingleChoiceMenuState(emptyList(), header = { emptyHeader() }) }
-                    val newMap = newDevices.groupBy { it.id }
+                    val newMap = newDevices.filterIsInstance<Device>().groupBy { it.id }
                     currentDevices = currentDevices
                         .mapValues { (id, device) ->
                             device.copy(connections = newMap[id]?.map { it.connectionType }?.sortedDescending() ?: emptyList())
@@ -96,18 +98,38 @@ private suspend fun Terminal.deviceSelectionMenu(client: AdbClient): SelectableD
                         if (id in currentDevices) null
                         else id to SelectableDevice(id, label = devices.first().label, connections = devices.map { it.connectionType }.sortedDescending())
                     }
-                    SingleChoiceMenuState(currentDevices.values.sorted(), header = { normalHeader() })
+                    currentDevices = currentDevices.mapValues { (_, device) -> device.copy(
+                        errors = newDevices.asSequence()
+                            .filter { it.estimatedId == device.id }
+                            .map { it.state }
+                            .filterIsInstance<Device.State.Other>()
+                            .distinct()
+                            .toList()
+                    ) }
+                    val errorDevices = newDevices
+                        .filter { it.state is Device.State.Other && (it.estimatedId == null || it.estimatedId !in currentDevices) }
+                        .map { SelectableDevice(
+                            id = "error:${it.serial}",
+                            label = "Unknown device: ${it.serial}",
+                            connections = emptyList(),
+                            errors = listOf(it.state as Device.State.Other),
+                        ) }
+                    SingleChoiceMenuState(currentDevices.values.sorted(), extraEntries = errorDevices, header = { normalHeader() })
                 }
                 .let { emitAll(it) }
         },
         key = { it.id },
         label = { device ->
-            if (device.connections.isEmpty()) "${(device.label.searchable(dim + white))} ${(dim + italic)("(${"offline".searchable()})")}"
-            else ("${device.label.searchable(bold + white)} ${(italic)("(${device.connections.joinToString(", ") { it.name.lowercase().searchable() }})")}")
+            val errors = if (device.errors.isEmpty()) "" else ", " + device.errors.joinToString(", ") { it.description.searchable() }
+            if (device.connections.isEmpty())
+                "${(device.label.searchable(dim + white))} ${(dim + italic)("(${"offline".searchable()}$errors)")}"
+            else
+                "${device.label.searchable(bold + white)} ${(italic)("(${device.connections.joinToString(", ") { it.name.lowercase().searchable() }}$errors)")}"
         },
         searchText = { device ->
-            if (device.connections.isEmpty()) "${device.label} offline"
-            else "${device.label} ${device.connections.joinToString(" ") { it.name.lowercase() }}"
+            val errors = if (device.errors.isEmpty()) "" else " " + device.errors.joinToString(" ") { it.description }
+            if (device.connections.isEmpty()) "${device.label} offline$errors"
+            else "${device.label} ${device.connections.joinToString(" ") { it.name.lowercase() }}$errors"
         },
     )
     println((Colors.blue + bold)("Using device '${result.label}'"))
@@ -147,6 +169,7 @@ private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: Strin
                 apps = client.listInstalledPackages(deviceId)
                     .getOrElse {
                         emit(SingleChoiceMenuState(emptyList(), header = { failedHeader() }))
+                        delay(1.seconds) // Wait a second to avoid spam
                         null
                     }
                     ?.associateTo(mutableMapOf()) { it.id to SelectableApp(it) }
