@@ -15,6 +15,8 @@ import java.net.Socket
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -224,9 +226,13 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
     companion object {
         private val SOCKET_TIMEOUT = 6.seconds
 
-        suspend fun open(host: String, port: Int): Result<AdbServerConnection, Error.Connect> = withContext(Dispatchers.IO) {
+        suspend fun open(host: String, port: Int, ssl: Boolean = false): Result<AdbServerConnection, Error.Connect> = withContext(Dispatchers.IO) {
             attempt {
-                AdbServerConnection(Socket(host, port).apply { soTimeout = SOCKET_TIMEOUT.inWholeMilliseconds.toInt() })
+                val socket =
+                    if (ssl) SSLSocketFactory.getDefault().createSocket(host, port)
+                    else Socket(host, port)
+                socket.soTimeout = SOCKET_TIMEOUT.inWholeMilliseconds.toInt()
+                AdbServerConnection(socket)
             } catch { e -> when (e) {
                 is UnknownHostException -> Error.UnknownHost(host)
                 is IllegalArgumentException -> Error.InvalidPort(port)

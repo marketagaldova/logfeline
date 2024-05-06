@@ -23,6 +23,7 @@ import kotlin.time.Duration.Companion.seconds
 fun main(args: Array<String>): Unit = runBlocking {
     var adbHost = AdbClient.DEFAULT_HOST
     var adbPort = System.getenv("ANDROID_ADB_SERVER_PORT")?.toIntOrNull() ?: AdbClient.DEFAULT_PORT
+    var adbSsl = false
     args.forEach { arg -> println(arg); when {
         arg.startsWith("server=") -> {
             val value = arg.split('=', limit = 2)[1].ifBlank {
@@ -43,8 +44,13 @@ fun main(args: Array<String>): Unit = runBlocking {
                 exitProcess(1)
             }
         }
+        arg == "ssl" -> adbSsl = true
+        arg.startsWith("ssl=") -> adbSsl = arg.removePrefix("ssl=").toBooleanStrictOrNull() ?: run {
+            println("Not a valid boolean value: `${arg.removePrefix("ssl=")}`")
+            exitProcess(1)
+        }
         else -> {
-            println("Unkown argument: `$arg`")
+            println("Unknown argument: `$arg`")
             exitProcess(1)
         }
     } }
@@ -54,7 +60,7 @@ fun main(args: Array<String>): Unit = runBlocking {
     switchStdinToDirectMode()
     terminal.cursor.hide(showOnExit = true)
 
-    val client = AdbClient(adbHost, adbPort)
+    val client = AdbClient(adbHost, adbPort, adbSsl)
 
     val (selectedDeviceId, selectedDeviceLabel) = terminal.deviceSelectionMenu(client)
     val appLabelService = client.startAppLabelService(selectedDeviceId)

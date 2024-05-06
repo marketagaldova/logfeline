@@ -24,6 +24,7 @@ import kotlin.time.Duration.Companion.seconds
 class AdbClient(
     val host: String = DEFAULT_HOST,
     val port: Int = System.getenv("ANDROID_ADB_SERVER_PORT")?.toIntOrNull() ?: DEFAULT_PORT,
+    val ssl: Boolean = false,
     val reconnectInterval: Duration = 10.seconds,
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
@@ -31,7 +32,7 @@ class AdbClient(
     
     val devices: SharedFlow<List<DeviceDescriptor>> = flow {
         while (currentCoroutineContext().isActive) {
-            AdbServerConnection.open(host, port)
+            AdbServerConnection.open(host, port, ssl)
                 .onFailure { delay(reconnectInterval) }
                 .onSuccess { connection -> connection.use {
                     val channel = connection.trackDevices().getOrElse { return@onSuccess }
@@ -276,7 +277,7 @@ class AdbClient(
         val appLabelDexHash = classLoader.getResourceAsStream("AppLabels.sha256")!!.bufferedReader().use { it.readText() }
         val appLabelDexName = "AppLabels-$appLabelDexHash.dex"
 
-        AdbServerConnection.open(host, port)
+        AdbServerConnection.open(host, port, ssl)
             .getOrFail { Error.IO }
             .use { connection ->
                 connection.switchToDevice(serial).getOrFail { Error.IO }
@@ -419,7 +420,7 @@ class AdbClient(
             callsInPlace(block, InvocationKind.AT_MOST_ONCE)
         }
 
-        AdbServerConnection.open(host, port)
+        AdbServerConnection.open(host, port, ssl)
             .getOrElse { return Result.failure(it) }
             .use { connection ->
                 connection.switchToDevice(serial).onFailure { e -> return Result.failure(e) }
