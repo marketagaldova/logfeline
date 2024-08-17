@@ -10,6 +10,7 @@ A better adb logcat, written in kotlin.
   options (for example both usb and tcp), and switch between them as necessary.
   If a device gets disconnected completely, it will reconnect when it becomes
   available again.
+- Screenshots? Apparently so.
 - Pretty colors ✨
 
 ## Requirements ##
@@ -77,6 +78,9 @@ Once in the log view, there are several options:
     - `basic` - Only change text color.
     - `dim` (the default) - Bright text on dim background.
     - `bright` - Dim text on bright background.
+  - `screenshot <path>` or `ss <path>` - This will take a screenshot of the device. `<path>` is the
+    directory in which the screenshot will be stored, though it can be omitted, in
+    which case `~/logfeline/screenshots` will be used.
 
 ## Some technical bits ##
 - Logfeline does not use the `adb` client, it connects to the server directly. This
