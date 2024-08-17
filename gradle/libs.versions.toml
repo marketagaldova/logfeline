@@ -1,5 +1,5 @@
 [versions]
-logfeline = "0.1.0"
+logfeline = "0.2.0"
 
 kotlin = "1.9.22"
 kotlinx-coroutines = "1.8.0"
