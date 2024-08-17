@@ -11,8 +11,16 @@ import logfeline.adb.LogEntry.Priority
 import logfeline.client.cli.Colors
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.*
+import kotlinx.datetime.Clock
 import logfeline.adb.*
 import logfeline.client.cli.TextInputHandler
+import logfeline.utils.result.getOrElse
+import java.io.IOException
+import java.nio.file.InvalidPathException
+import javax.imageio.ImageIO
+import kotlin.io.path.Path
+import kotlin.io.path.createParentDirectories
+import kotlin.io.path.div
 import kotlin.system.exitProcess
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -60,6 +68,39 @@ suspend fun Terminal.logcat(
                     tagColors = newStyle ?: tagColors
                     if (newStyle != null) commandOutput?.invoke("Set tag highlighting style to ${newStyle.name}")
                     else commandOutput?.invoke("Unknown highlighting style: `$style`")
+                }
+                value == "screenshot" || value == "ss" || value.startsWith("screenshot ") || value.startsWith("ss ") -> {
+                    val outputDir = value.substringAfter(' ', missingDelimiterValue = "")
+                        .takeIf { it.isNotBlank() }
+                        ?.let { path ->
+                            try { Path(path) }
+                            catch (e: InvalidPathException) {
+                                commandOutput?.invoke("`$path` is not a valid path")
+                                return@TextInputHandler clear()
+                            }
+                        }
+                        ?: (Path(System.getProperty("user.home")) / "logfeline" / "screenshots")
+                    launch(Dispatchers.IO) {
+                        val image = client.screenshot(deviceId)
+                            .getOrElse { e ->
+                                when (e) {
+                                    is AdbClient.Error.DeviceOffline -> commandOutput?.invoke("Screenshot failed because the device is offline")
+                                    is AdbClient.Error.IO -> commandOutput?.invoke("Screenshot failed because of an IO error")
+                                }
+                                return@launch
+                            }
+
+                        val outputFile = outputDir / "${Clock.System.now()}.png"
+                        try {
+                            outputFile.createParentDirectories()
+                            ImageIO.write(image, "PNG", outputFile.toFile())
+                        }
+                        catch (e: IOException) {
+                            commandOutput?.invoke("Failed to save screenshot to $outputFile")
+                            return@launch
+                        }
+                        commandOutput?.invoke("Saved screenshot to $outputFile")
+                    }
                 }
                 value.isNotBlank() -> commandOutput?.invoke("Unknown command: `$value`")
             }

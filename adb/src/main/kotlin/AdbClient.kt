@@ -9,6 +9,7 @@ import kotlinx.coroutines.channels.*
 import kotlinx.coroutines.flow.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import java.awt.image.BufferedImage
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
@@ -409,6 +410,30 @@ class AdbClient(
     }.conflate()
 
 
+    suspend fun screenshot(deviceId: String): Result<BufferedImage, Error.ScreenShot> {
+        val device = findOnlineDevice(deviceId) ?: return Result.failure(Error.DeviceOffline(deviceId))
+        val frameBuffer = AdbServerConnection.open(host, port, ssl)
+            .getOrElse { return Result.failure(Error.IO) }
+            .use { connection ->
+                connection.switchToDevice(device.serial).onFailure { return Result.failure(Error.IO) }
+                connection.frameBuffer().getOrElse { return Result.failure(Error.IO) }
+            }
+
+        val image = BufferedImage(frameBuffer.header.width, frameBuffer.header.height, BufferedImage.TYPE_INT_ARGB)
+        for (x in 0 ..< frameBuffer.header.width)
+            for (y in 0 ..< frameBuffer.header.height) {
+                val i = (y * frameBuffer.header.width + x) * (frameBuffer.header.bpp / 8)
+                val pixel =
+                    (frameBuffer.data[i + (frameBuffer.header.alphaOffset / 8)].toInt() and 0xff shl 24) or
+                    (frameBuffer.data[i + (frameBuffer.header.redOffset / 8)].toInt() and 0xff shl 16) or
+                    (frameBuffer.data[i + (frameBuffer.header.greenOffset / 8)].toInt() and 0xff shl 8) or
+                    (frameBuffer.data[i + (frameBuffer.header.blueOffset / 8)].toInt() and 0xff)
+                image.setRGB(x, y, pixel)
+            }
+        return Result.success(image)
+    }
+
+
     @OptIn(ExperimentalContracts::class)
     internal suspend inline fun <R> runShellCommand(
             serial: String,
@@ -446,8 +471,9 @@ class AdbClient(
         sealed interface ListInstalledPackages : Error
         sealed interface GetLabelForApp : Error
         sealed interface Logcat : Error
+        sealed interface ScreenShot : Error
 
-        data object IO : ListInstalledPackages, GetLabelForApp, Logcat
-        data class DeviceOffline(val deviceId: String) : ListInstalledPackages, GetLabelForApp, Logcat
+        data object IO : ListInstalledPackages, GetLabelForApp, Logcat, ScreenShot
+        data class DeviceOffline(val deviceId: String) : ListInstalledPackages, GetLabelForApp, Logcat, ScreenShot
     }
 }

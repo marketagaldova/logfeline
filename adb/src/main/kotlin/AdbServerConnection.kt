@@ -15,7 +15,6 @@ import java.net.Socket
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -207,6 +206,47 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
         val exists get() = mode != 0u || size != 0u || lastModified != 0u
     }
 
+    suspend fun frameBuffer(): Result<FrameBuffer, Error.FrameBuffer> {
+        sendCommand("framebuffer:").onFailure { e -> return Result.failure(Error.IO.Error(e)) }
+        awaitResponse().onFailure { e -> return Result.failure(e) }
+
+        val version = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).run {
+            socket.inputStream.readFully(array(), arrayOffset(), capacity())
+                .onFailure { e -> return Result.failure(Error.IO.Error(e)) }
+            getInt()
+        }
+        if (version != 2) return Result.failure(Error.UnsupportedProtocolVersion(version))
+
+        val header = ByteBuffer.allocate(13 * 4).order(ByteOrder.LITTLE_ENDIAN).run {
+            socket.inputStream.readFully(array(), arrayOffset(), capacity())
+                .onFailure { e -> return Result.failure(Error.IO.Error(e)) }
+            FrameBuffer.Header(this)
+        }
+
+        val data = ByteArray(header.size)
+        socket.inputStream.readFully(data)
+            .onFailure { e -> return Result.failure(Error.IO.Error(e)) }
+
+        return Result.success(FrameBuffer(header, data))
+    }
+    class FrameBuffer(val header: Header, val data: ByteArray) {
+        @JvmInline value class Header(val buffer: ByteBuffer) {
+            val bpp get() = buffer.getInt(0)
+            val colorSpace get() = buffer.getInt(4)
+            val size get() = buffer.getInt(8)
+            val width get() = buffer.getInt(12)
+            val height get() = buffer.getInt(16)
+            val redOffset get() = buffer.getInt(20)
+            val redLength get() = buffer.getInt(24)
+            val blueOffset get() = buffer.getInt(28)
+            val blueLength get() = buffer.getInt(32)
+            val greenOffset get() = buffer.getInt(36)
+            val greenLength get() = buffer.getInt(40)
+            val alphaOffset get() = buffer.getInt(44)
+            val alphaLength get() = buffer.getInt(48)
+        }
+    }
+
 
     @OptIn(DelicateCoroutinesApi::class)
     private suspend inline fun <T> readProtoIntoChannel(channel: SendChannel<T>, parse: ByteBuffer.() -> T) {
@@ -249,6 +289,7 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
         sealed interface SwitchToDevice : Error
         sealed interface RunShellCommand : Error
         sealed interface TrackApps : Error
+        sealed interface FrameBuffer : Error
         
         sealed interface Sync : Error
 
@@ -256,14 +297,16 @@ internal class AdbServerConnection(private val socket: Socket) : Closeable {
         data class InvalidPort(val port: Int) : Connect
         sealed interface IO : Error {
             data class Exception(val cause: IOException) : IO, Connect
-            data class Error(val cause: IOError) : IO, AdbResponse, TrackDevices, SwitchToDevice, RunShellCommand, TrackApps, Sync
+            data class Error(val cause: IOError) : IO, AdbResponse, TrackDevices, SwitchToDevice, RunShellCommand, TrackApps, Sync, FrameBuffer
         }
         
-        sealed interface AdbResponse : Error, TrackDevices, SwitchToDevice, RunShellCommand, TrackApps, Sync {
+        sealed interface AdbResponse : Error, TrackDevices, SwitchToDevice, RunShellCommand, TrackApps, Sync, FrameBuffer {
             data object FailureResponse : AdbResponse
             data class MalformedResponse(val response: String) : AdbResponse
         }
         
         data class IllegalArgument(val argument: String) : RunShellCommand
+
+        data class UnsupportedProtocolVersion(val version: Int) : FrameBuffer
     }
 }
