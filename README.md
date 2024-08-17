@@ -97,7 +97,7 @@ Once in the log view, there are several options:
   fastest operation though, hence why you will see `Waiting for labels...` anyway.
 
 - If you for whatever reason want to do something similar to this, then
-  [the adb source](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/SERVICES.TXT)
+  [the adb source](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/services.md)
   is your friend. The linked file in particular is very useful, although it is quite
   incomplete, so you will have to hunt around for information in the actual source.
 
