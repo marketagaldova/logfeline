@@ -85,9 +85,13 @@ private suspend fun Terminal.deviceSelectionMenu(client: AdbClient): SelectableD
             val progressState = ProgressDotsState()
             suspend fun Terminal.emptyHeader() {
                 print((bold + white)("Waiting for devices"))
+                cursor.move { clearLineAfterCursor() }
                 progressDotsWhileActive(progressState)
             }
-            fun Terminal.normalHeader() { print((bold + Colors.blue)("Select a device:")) }
+            fun Terminal.normalHeader() {
+                print((bold + Colors.blue)("Select a device:"))
+                cursor.move { clearLineAfterCursor() }
+            }
 
             emit(SingleChoiceMenuState(emptyList(), header = { emptyHeader() }))
 
@@ -151,22 +155,28 @@ private suspend fun Terminal.appSelectionMenu(client: AdbClient, deviceId: Strin
             val progressState = ProgressDotsState()
             suspend fun Terminal.emptyHeader() {
                 print((bold + white)("Listing installed apps"))
+                cursor.move { clearLineAfterCursor() }
                 progressDotsWhileActive(progressState)
             }
             suspend fun Terminal.failedHeader() {
                 print((bold + brightRed)("Failed to list installed apps!") + (bold + white)(" Retrying"))
+                cursor.move { clearLineAfterCursor() }
                 progressDotsWhileActive(progressState)
             }
             suspend fun Terminal.waitingForLabelsHeader() { while (true) {
                 currentCoroutineContext().ensureActive()
-                cursor.move { startOfLine(); clearLineAfterCursor() }
+                cursor.move { startOfLine() }
                 print((bold + Colors.blue)("Select an app "))
                 print(italic("(waiting for labels"))
                 progressDots(progressState)
                 print(italic(")"))
+                cursor.move { clearLineAfterCursor() }
                 delay(50.milliseconds)
             } }
-            fun Terminal.normalHeader() { print((bold + Colors.blue)("Select an app:")) }
+            fun Terminal.normalHeader() {
+                print((bold + Colors.blue)("Select an app:"))
+                cursor.move { clearLineAfterCursor() }
+            }
 
             emit(SingleChoiceMenuState(emptyList(), header = { emptyHeader() }))
 

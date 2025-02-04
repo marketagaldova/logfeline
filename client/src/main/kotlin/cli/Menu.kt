@@ -83,24 +83,32 @@ suspend fun <T> Terminal.singleChoiceMenu(
         // Move back to start and clear the screen, but leave space for the header
         cursor.move {
             startOfLine()
-            clearScreenAfterCursor()
+            down(1)
         }
-        println()
 
         // Render the choices
         val labelScope = LabelScope(queryInput.value)
         actualChoices.forEach { choice ->
             val isSelected = key(choice) == selectedKey
             print(if (isSelected) cursorStyle(">>> ") else "    ")
-            println(labelScope.label(choice))
+            print(labelScope.label(choice))
+            cursor.move { clearLineAfterCursor() }
+            println()
         }
         // Render extra entries
-        extraEntries.forEach { entry -> println("    " + labelScope.label(entry)) }
+        extraEntries.forEach { entry ->
+            print("    " + labelScope.label(entry))
+            cursor.move { clearLineAfterCursor() }
+            println()
+        }
 
         // Render the query
         if (showQuery) {
-            print(queryInput.render("Search: ", 70))
-            cursor.move { startOfLine() }
+            print(queryInput.render("Search", 70))
+            cursor.move {
+                clearScreenAfterCursor()
+                startOfLine()
+            }
         }
 
         // Go back to the header line and let the header job do it's thing

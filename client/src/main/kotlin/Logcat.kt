@@ -119,7 +119,7 @@ suspend fun Terminal.logcat(
         combine(showCommand, commandInput) { show, input -> show to input },
     ) { (device, pid, appLabel), (showFilter, filterInput), (showCommand, commandInput) ->
         when {
-            showCommand -> Text(commandInput.render("Command: ", info.width), width = info.width)
+            showCommand -> Text(commandInput.render("Command", info.width), width = info.width)
             showFilter -> Text(filterInput.render("Set filters", info.width), width = info.width)
             else -> prepareStatusBar(
                 deviceLabel, device?.connectionType, device?.state ?: Device.State.Offline,
