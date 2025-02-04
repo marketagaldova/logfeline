@@ -300,7 +300,7 @@ class AdbClient(
     }
 
 
-    suspend fun logcat(deviceId: String): Flow<LogcatEvent> = flow {
+    fun logcat(deviceId: String): Flow<LogcatEvent> = flow {
         var lastEntry: LogEntry? = null
         var disconnectedAt: Instant? = null
 
@@ -379,7 +379,7 @@ class AdbClient(
 
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun watchPidOf(deviceId: String, packageId: String) = flow {
+    fun watchPidOf(deviceId: String, packageId: String) = flow {
         emit(null)
         var previousPid: Int? = null
         device(deviceId).transformLatest { device ->
