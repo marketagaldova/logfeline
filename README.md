@@ -1,3 +1,5 @@
+# **This project has been moved to [codeberg](https://codeberg.org/mari/logfeline)**. #
+
 # Logfeline #
 A better adb logcat, written in kotlin.
 
